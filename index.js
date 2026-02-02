@@ -14,7 +14,9 @@ import { initClassifier, classifyText } from './classifier.js'
 import nodemailer from 'nodemailer'
 ////////////
 const app = express()
-app.use(cors({ origin: true }))
+app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true, methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] }))
+app.options('*', cors())
+app.set('trust proxy', 1)
 app.use(compression({ level: 6 }))
 app.use((req, res, next) => {
   try {
@@ -33,19 +35,37 @@ let transporter = null
 if (SMTP_URL) {
   transporter = nodemailer.createTransport(SMTP_URL)
 } else if (SMTP_SERVICE && SMTP_USER && SMTP_PASS) {
-  transporter = nodemailer.createTransport({ service: SMTP_SERVICE, auth: { user: SMTP_USER, pass: SMTP_PASS } })
+  transporter = nodemailer.createTransport({
+    service: SMTP_SERVICE,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+    connectionTimeout: Number(process.env.SMTP_CONNECT_TIMEOUT || '15000'),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT || '15000'),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || '30000'),
+    pool: false,
+  })
 } else if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
   transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: Number(SMTP_PORT || 587),
     secure: String(SMTP_SECURE).toLowerCase() === 'true',
     auth: { user: SMTP_USER, pass: SMTP_PASS },
+    connectionTimeout: Number(process.env.SMTP_CONNECT_TIMEOUT || '15000'),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT || '15000'),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || '30000'),
+    pool: false,
   })
 }
 const EMAIL_USER = process.env.EMAIL_USER || process.env['email-user'] || SMTP_USER
 const EMAIL_PASS = process.env.EMAIL_PASS || process.env['email-pass'] || SMTP_PASS
 if (!transporter && EMAIL_USER && EMAIL_PASS) {
-  transporter = nodemailer.createTransport({ service: SMTP_SERVICE || 'gmail', auth: { user: EMAIL_USER, pass: EMAIL_PASS } })
+  transporter = nodemailer.createTransport({
+    service: SMTP_SERVICE || 'gmail',
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    connectionTimeout: Number(process.env.SMTP_CONNECT_TIMEOUT || '15000'),
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT || '15000'),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT || '30000'),
+    pool: false,
+  })
 }
 const FROM_ADDR = (process.env.SMTP_FROM || FROM_EMAIL || EMAIL_USER || SMTP_USER || 'no-reply@smartpolice.in')
 let SMTP_READY = false
@@ -53,7 +73,11 @@ let SMTP_LAST_ERR = null
 async function verifySmtp() {
   try {
     if (!transporter) { SMTP_READY = false; SMTP_LAST_ERR = 'No transporter configured'; return }
-    await transporter.verify()
+    const timeoutMs = Number(process.env.SMTP_VERIFY_TIMEOUT || '8000')
+    await Promise.race([
+      transporter.verify(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+    ])
     SMTP_READY = true
     SMTP_LAST_ERR = null
     console.log('SMTP_READY', { service: SMTP_SERVICE || (SMTP_HOST ? 'custom' : (SMTP_URL ? 'url' : 'unknown')), user: EMAIL_USER || SMTP_USER || '' })
@@ -1729,7 +1753,7 @@ const server = app.listen(PORT, () => {
 // Socket.IO setup for real-time notifications
 const io = new SocketIOServer(server, {
   cors: {
-    origin: 'http://localhost:5173',
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST'],
   },
