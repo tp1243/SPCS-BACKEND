@@ -94,10 +94,94 @@ const OTP_EXP_SECONDS = 300
 const RESEND_COOLDOWN_MS = 60000
 const MAX_ATTEMPTS = 5
 const MAX_RESENDS = 3
-async function sendOtp(email, code, purpose) {
-  const subject = purpose === 'login' ? 'Login OTP' : 'Registration OTP'
-  const text = `Your OTP is ${code}. It expires in 5 minutes.`
-  const html = `<div style="font-family:Arial,sans-serif"><h3>Smart Police Complaint System</h3><p>Your OTP is <b>${code}</b>.</p><p>It expires in 5 minutes.</p></div>`
+async function sendOtp(email, code, purpose, req, brandRaw) {
+  const b = brandRaw || {}
+  const subj =
+    b.subject || b.otpSubject || b.otpEmailSubject || 'Secure Verification Code – Smart Police Complaint System'
+  const timeStr = new Date().toISOString()
+  const ipStr = (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || req.socket?.remoteAddress || '').trim()
+  const uaStr = req.headers['user-agent'] || ''
+  const supportEmail = b.supportEmail || 'smartpolicecomplaints@gmail.com'
+  const supportPhone = b.supportPhone || '+91-8591604077'
+  const defaultText = [
+    'Subject: Secure Verification Code – Smart Police Complaint System',
+    '',
+    'Dear User,',
+    '',
+    'We received a request to verify your identity for accessing the Smart Police Complaint System.',
+    '',
+    'For your security, please use the One-Time Password (OTP) below to complete the verification process:',
+    '',
+    '🔐 Your Verification Code',
+    '{{OTP_CODE}}',
+    '',
+    '⏳ Validity: This OTP is valid for the next 5 minutes only.',
+    '',
+    '📌 Action Required: Enter this code on the verification screen to proceed securely.',
+    '',
+    '⚠️ Security Notice',
+    'Never share your OTP with anyone, including system administrators.',
+    'Our team will never ask for your OTP via phone or email.',
+    '',
+    'If you did not initiate this request, please ignore this email or report it immediately.',
+    '',
+    '📍 Request Details (for your awareness)',
+    `Time: ${timeStr}`,
+    `IP Address / Device: ${ipStr} / ${uaStr}`,
+    '',
+    'If you face any issues, please contact our support team.',
+    '',
+    'Regards,',
+    'Smart Police Complaint System Team',
+    '',
+    `📧 Support: ${supportEmail}`,
+    `📞 Helpline: ${supportPhone}`,
+  ].join('\n')
+  const defaultHtml = `
+  <div style="font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.65;color:#0b1324;background:#f7f9fc;padding:24px">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;margin:0 auto;background:#ffffff;border:1px solid #e5eaf0;border-radius:12px;overflow:hidden">
+      <tr>
+        <td style="padding:20px;background:#0b1324;color:#eaf2ff;border-bottom:1px solid #1f2a3d">
+          <div style="font-weight:700;font-size:16px">Smart Police Complaint System</div>
+          <div style="opacity:0.78;font-size:13px">Secure Verification Code</div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px">
+          <p>Dear User,</p>
+          <p>We received a request to verify your identity for accessing the Smart Police Complaint System.</p>
+          <p>For your security, please use the One-Time Password (OTP) below to complete the verification process:</p>
+          <div style="margin:16px 0;padding:16px 18px;border:1px solid #e5eaf0;border-radius:10px;background:#f1f6ff">
+            <div style="font-weight:600;color:#0b1324;margin-bottom:8px">Your Verification Code</div>
+            <div style="font-size:26px;font-weight:800;letter-spacing:4px;color:#1e40af">{{OTP_CODE}}</div>
+            <div style="margin-top:8px;color:#334155">Validity: This OTP is valid for the next 5 minutes only.</div>
+          </div>
+          <p><strong>Action Required:</strong> Enter this code on the verification screen to proceed securely.</p>
+          <div style="margin:14px 0;padding:12px 14px;border:1px solid #fee2e2;border-radius:10px;background:#fff7f7;color:#7f1d1d">
+            <div style="font-weight:600;margin-bottom:6px">Security Notice</div>
+            <div>Never share your OTP with anyone, including system administrators. Our team will never ask for your OTP via phone or email.</div>
+          </div>
+          <div style="margin:12px 0;color:#334155">
+            <div style="font-weight:600">Request Details (for your awareness)</div>
+            <div>Time: ${timeStr}</div>
+            <div>IP Address / Device: ${ipStr} / ${uaStr}</div>
+          </div>
+          <p>If you did not initiate this request, please ignore this email or report it immediately.</p>
+          <p>Regards,<br/>Smart Police Complaint System Team</p>
+          <div style="margin-top:10px;color:#334155">
+            <div>Support: <a href="mailto:${supportEmail}">${supportEmail}</a></div>
+            <div>Helpline: ${supportPhone}</div>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </div>
+  `
+  const textSrc = b.text || b.otpText || b.otpEmailText || defaultText
+  const htmlSrc = b.html || b.body || b.message || b.otpHtml || b.otpEmailHtml || defaultHtml
+  const text = String(textSrc).replace(/{{OTP_CODE}}/g, String(code))
+  const html = String(htmlSrc).replace(/{{OTP_CODE}}/g, String(code))
+  const subject = String(subj)
   if (transporter) {
     try {
       await transporter.sendMail({ from: FROM_ADDR, to: email, subject, text, html })
@@ -403,7 +487,7 @@ app.post('/api/auth/register/begin', async (req, res) => {
     await OtpChallenge.updateOne({ email, purpose: 'register' }, { $set: { otpHash, attempts: 0, resendCount: 0, lastSentAt: new Date(), lockedUntil: null, createdAt: new Date() } }, { upsert: true })
     const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || req.socket?.remoteAddress || '').trim()
     const ua = req.headers['user-agent'] || ''
-    await sendOtp(email, code, 'register')
+    await sendOtp(email, code, 'register', req, req.body || {})
     console.log('OTP_SENT', { email, purpose: 'register', ip, ua, at: new Date().toISOString() })
     return res.json({ ok: true })
   } catch (err) {
@@ -503,7 +587,7 @@ app.post('/api/auth/login/begin', async (req, res) => {
     await OtpChallenge.updateOne({ email: normalized, purpose: 'login' }, { $set: { otpHash, attempts: 0, resendCount: 0, lastSentAt: new Date(), lockedUntil: null, createdAt: new Date() } }, { upsert: true })
     const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || req.socket?.remoteAddress || '').trim()
     const ua = req.headers['user-agent'] || ''
-    await sendOtp(normalized, code, 'login')
+    await sendOtp(normalized, code, 'login', req, req.body || {})
     console.log('OTP_SENT', { email: normalized, purpose: 'login', ip, ua, at: new Date().toISOString() })
     return res.json({ ok: true })
   } catch (err) {
@@ -571,7 +655,7 @@ app.post('/api/auth/otp/resend', async (req, res) => {
     await challenge.save()
     const ip = (req.headers['x-forwarded-for']?.toString().split(',')[0] || req.ip || req.socket?.remoteAddress || '').trim()
     const ua = req.headers['user-agent'] || ''
-    await sendOtp(normalized, code, purpose)
+    await sendOtp(normalized, code, purpose, req, req.body || {})
     console.log('OTP_RESENT', { email: normalized, purpose, ip, ua, at: new Date().toISOString(), count: challenge.resendCount })
     return res.json({ ok: true })
   } catch (err) {
