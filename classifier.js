@@ -45,8 +45,10 @@ const model = {
 const seedFir = [
   'stolen','robbery','theft','assault','violence','attack',
   'murder','rape','kidnap','burglary','snatch','threat',
-  'extortion','arson','hit','kill','weapon','injury',
-  'molest','harass','beat','fight','crime','abuse','illegal'
+  'extortion','arson','hit','kill','weapon','injury','injur',
+  'molest','harass','beat','fight','crime','abuse','illegal',
+  'accident','emergency','blood','fire','knife','gun','shoot','stab',
+  'terror','bomb','crash','hitandrun'
 ];
 
 const seedNon = [
@@ -58,13 +60,36 @@ const seedNon = [
 ];
 const strongFir = new Set([
   'stolen','robbery','assault','murder','rape','kidnap',
-  'burglary','snatch','extortion','weapon','violence','attack'
+  'burglary','snatch','extortion','weapon','violence','attack',
+  'accident','emergency','knife','gun','shoot','stab','injury','injur','fire','arson','blood','terror','bomb','kill'
 ]);
 const nonFirClues = new Set([
   'lost','missing','misplace','noc','verification','certificate',
   'passport','address','proof','clearance','document','found',
   'service','issue','request','application','support','feedback'
 ]);
+
+const highWords = new Set([
+  'accident','violence','attack','assault','murder','rape','kidnap','weapon','injury','injur','blood','fire','arson','extortion','threat','emergency','urgent','help','danger','knife','gun','shoot','stab','terror','bomb','kill','crash'
+])
+const mediumWords = new Set([
+  'harass','harassment','fraud','fight','suspicious','disturbance','vandalism','theft','robbery','snatch','bully','molest'
+])
+const lowWords = new Set([
+  'noc','verification','certificate','passport','address','proof','clearance','document','service','request','lost','missing','misplace','helpdesk','support','feedback','character','police','application','booking','info','wallet','card'
+])
+
+function detectPriority(toks) {
+  let high = false, med = false
+  for (const t of toks) {
+    if (highWords.has(t)) { high = true; break }
+    if (mediumWords.has(t)) { med = true }
+  }
+  if (high) return 'high'
+  if (med) return 'medium'
+  for (const t of toks) { if (lowWords.has(t)) return 'low' }
+  return 'low'
+}
 
 
 function addCounts(cls, toks) {
@@ -110,6 +135,37 @@ function trainFromSeed() {
   for (const w of all) model.idf.set(w, Math.log((N + 1) / 2))
 }
 
+function recalcIdf() {
+  const df = new Map()
+  for (const w of model.vocab) {
+    const inFir = model.cond.fir.has(w) ? 1 : 0
+    const inNon = model.cond.nonfir.has(w) ? 1 : 0
+    df.set(w, inFir + inNon)
+  }
+  const N = Math.max((model.totals.fir > 0 || model.totals.nonfir > 0) ? 2 : 1, 1)
+  for (const [w, d] of df.entries()) model.idf.set(w, Math.log((N + 1) / (d + 1)))
+}
+
+const curatedFirExamples = [
+  'road accident with injuries and blood',
+  'violent assault with weapon knife',
+  'robbery at home at night',
+  'emergency attack by unknown persons',
+  'arson fire incident in market',
+]
+const curatedNonExamples = [
+  'apply for noc and address proof',
+  'passport police verification request',
+  'lost document and need clearance certificate',
+  'service issue with helpdesk support',
+  'application for character certificate',
+]
+function augmentWithCurated() {
+  for (const t of curatedFirExamples) addCounts('fir', tokens(t))
+  for (const t of curatedNonExamples) addCounts('nonfir', tokens(t))
+  recalcIdf()
+}
+
 export async function initClassifier() {
   model.ready = false
   model.vocab.clear()
@@ -119,6 +175,7 @@ export async function initClassifier() {
   model.totals.nonfir = 0
   model.idf.clear()
   await trainFromDb()
+  augmentWithCurated()
   if (model.vocab.size === 0) trainFromSeed()
   model.ready = true
 }
@@ -134,12 +191,16 @@ export function classifyText(text) {
     const firHits = seedFir.filter(k => joined.includes(k)).length
     const nonHits = seedNon.filter(k => joined.includes(k)).length
     const label = firHits >= nonHits ? 'fir' : 'non-fir'
-    return { label, probFir: firHits >= nonHits ? 0.6 : 0.4, probNonFir: firHits >= nonHits ? 0.4 : 0.6, tokens: toks }
+    return { label, probFir: firHits >= nonHits ? 0.6 : 0.4, probNonFir: firHits >= nonHits ? 0.4 : 0.6, tokens: toks, priority: detectPriority(toks) }
   }
   const hasStrongFir = toks.some(w => strongFir.has(w))
   const hasNonFirCue = toks.some(w => nonFirClues.has(w))
-  if (!hasStrongFir && hasNonFirCue) {
-    return { label: 'non-fir', probFir: 0.35, probNonFir: 0.65, tokens: toks }
+  const priority = detectPriority(toks)
+  if (priority === 'high' || hasStrongFir) {
+    return { label: 'fir', probFir: 0.92, probNonFir: 0.08, tokens: toks, priority }
+  }
+  if (!hasStrongFir && hasNonFirCue && priority === 'low') {
+    return { label: 'non-fir', probFir: 0.3, probNonFir: 0.7, tokens: toks, priority }
   }
   const weights = tfidfWeights(toks, model.idf)
   const V = Math.max(model.vocab.size, 1)
@@ -163,8 +224,10 @@ export function classifyText(text) {
   const pFir = eFir / Z
   const pNon = eNon / Z
   let label = pFir >= pNon ? 'fir' : 'non-fir'
-  if (!hasStrongFir && pFir < 0.6) label = 'non-fir'
-  return { label, probFir: pFir, probNonFir: pNon, tokens: toks }
+  if (priority === 'medium' && label === 'non-fir' && pFir >= 0.45) label = 'fir'
+  if (label === 'non-fir' && priority === 'high') label = 'fir'
+  if (!hasStrongFir && priority === 'low' && pFir < 0.6) label = 'non-fir'
+  return { label, probFir: pFir, probNonFir: pNon, tokens: toks, priority }
 }
 
 export function trainFromExamples(examples) {
